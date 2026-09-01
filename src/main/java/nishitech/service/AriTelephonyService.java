@@ -8,6 +8,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -19,12 +20,14 @@ import java.net.http.WebSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 @Service
+@Lazy(false)
 @Slf4j
 @RequiredArgsConstructor
 public class AriTelephonyService {
@@ -61,7 +64,7 @@ public class AriTelephonyService {
                 .build();
 
         // Heartbeat / auto-reconnect every 5 seconds
-        scheduler.scheduleWithFixedDelay(this::ensureWebSocketConnected, 2, 5, TimeUnit.SECONDS);
+        scheduler.scheduleWithFixedDelay(this::ensureWebSocketConnected, 1, 5, TimeUnit.SECONDS);
     }
 
     private synchronized void ensureWebSocketConnected() {
@@ -194,5 +197,9 @@ public class AriTelephonyService {
         } catch (Exception e) {
             log.warn("Failed to originate live ARI channel: {}", e.getMessage());
         }
+    }
+
+    public List<CallLog> getAllCalls() {
+        return callLogRepository.findAll();
     }
 }
