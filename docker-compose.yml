@@ -1,4 +1,25 @@
 services:
+  crm_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crm_app
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://crm_postgres:5432/telephony_crm
+      SPRING_DATASOURCE_USERNAME: crm_user
+      SPRING_DATASOURCE_PASSWORD: crm_password
+      TELEPHONY_ASTERISK_BASE_URL: http://crm_asterisk:8088/ari
+      TELEPHONY_ASTERISK_USERNAME: asterisk
+      TELEPHONY_ASTERISK_PASSWORD: asteriskpassword
+      TELEPHONY_ASTERISK_APP_NAME: crm-dialer
+      GROK_API_KEY: ${GROK_API_KEY:YOUR_GROK_API_KEY}
+    depends_on:
+      - postgres
+      - asterisk
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     container_name: crm_postgres
@@ -10,6 +31,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./crm_database.sql:/docker-entrypoint-initdb.d/crm_database.sql:ro
+    restart: unless-stopped
 
   asterisk:
     image: andrius/asterisk:latest
