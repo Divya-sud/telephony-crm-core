@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: crm_postgres
+    environment:
+      POSTGRES_DB: telephony_crm
+      POSTGRES_USER: crm_user
+      POSTGRES_PASSWORD: crm_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  asterisk:
+    image: andrius/asterisk:latest
+    container_name: crm_asterisk
+    ports:
+      - "5065:5060/udp"
+      - "8088:8088"
+      - "10100-10120:10100-10120/udp"
+    volumes:
+      - ./asterisk-config/ari.conf:/etc/asterisk/ari.conf:ro
+      - ./asterisk-config/extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./asterisk-config/pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      - ./asterisk-config/rtp.conf:/etc/asterisk/rtp.conf:ro
+      - asterisk_recordings:/var/spool/asterisk/monitor
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  asterisk_recordings:

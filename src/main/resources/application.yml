@@ -1,0 +1,31 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/telephony_crm
+    username: crm_user
+    password: crm_password
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+  ai:
+    ollama:
+      base-url: http://localhost:11434
+      chat:
+        options:
+          model: llama3:8b
+          temperature: 0.3
+
+telephony:
+  asterisk:
+    base-url: http://localhost:8088/ari
+    username: ari_user
+    password: ari_password
+    app-name: crm-ivr
+
+whatsapp:
+  api-url: https://graph.facebook.com/v20.0
+  phone-number-id: "YOUR_META_PHONE_ID"
+  access-token: "YOUR_META_TOKEN"
