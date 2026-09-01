@@ -12,16 +12,14 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
-import org.springframework.web.socket.CloseStatus;
-import org.springframework.web.socket.TextMessage;
-import org.springframework.web.socket.WebSocketHttpHeaders;
-import org.springframework.web.socket.WebSocketSession;
-import org.springframework.web.socket.client.standard.StandardWebSocketClient;
-import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.WebSocket;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Base64;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -49,23 +47,25 @@ public class AriTelephonyService {
 
     private RestClient restClient;
     private volatile boolean isConnected = false;
+    private WebSocket activeWebSocket;
 
     @PostConstruct
     public void init() {
-        String basicAuthHeader = "Basic " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
+        String basicAuth = "Basic " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
 
         this.restClient = RestClient.builder()
                 .baseUrl(ariBaseUrl)
-                .defaultHeader(HttpHeaders.AUTHORIZATION, basicAuthHeader)
+                .defaultHeader(HttpHeaders.AUTHORIZATION, basicAuth)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .defaultHeader("ngrok-skip-browser-warning", "true")
                 .build();
 
-        scheduler.scheduleWithFixedDelay(this::ensureWebSocketConnected, 2, 8, TimeUnit.SECONDS);
+        // Heartbeat / auto-reconnect every 5 seconds
+        scheduler.scheduleWithFixedDelay(this::ensureWebSocketConnected, 2, 5, TimeUnit.SECONDS);
     }
 
     private synchronized void ensureWebSocketConnected() {
-        if (isConnected) {
+        if (isConnected && activeWebSocket != null) {
             return;
         }
 
@@ -75,45 +75,65 @@ public class AriTelephonyService {
                     .replace("https://", "wss://")
                     .replace("http://", "ws://");
 
-            // Embed credentials & skip flag in query parameters
-            String wsEndpoint = String.format("%s/events?app=%s&api_key=%s:%s&subscribeAll=true&ngrok-skip-browser-warning=true",
+            String wsEndpoint = String.format("%s/events?app=%s&api_key=%s:%s&subscribeAll=true",
                     wsBaseUrl, appName, username, password);
 
-            log.info("Connecting to Asterisk ARI: {}", wsEndpoint);
-
-            WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
             String rawAuth = username + ":" + password;
-            headers.add(HttpHeaders.AUTHORIZATION, "Basic " + Base64.getEncoder().encodeToString(rawAuth.getBytes(StandardCharsets.UTF_8)));
+            String encodedAuth = "Basic " + Base64.getEncoder().encodeToString(rawAuth.getBytes(StandardCharsets.UTF_8));
 
-            StandardWebSocketClient client = new StandardWebSocketClient();
-            client.execute(new TextWebSocketHandler() {
-                @Override
-                public void afterConnectionEstablished(WebSocketSession session) {
-                    isConnected = true;
-                    log.info(">>> ACTIVE: Connected to Asterisk ARI Stasis App [{}] <<<", appName);
-                }
+            log.info("Connecting native WebSocket to ARI: {}", wsEndpoint);
 
-                @Override
-                protected void handleTextMessage(WebSocketSession session, TextMessage message) {
-                    processEvent(message.getPayload());
-                }
+            HttpClient httpClient = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .build();
 
-                @Override
-                public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-                    isConnected = false;
-                    log.warn("Asterisk ARI WebSocket closed ({}). Reconnecting...", status);
-                }
+            httpClient.newWebSocketBuilder()
+                    .header("Authorization", encodedAuth)
+                    .header("ngrok-skip-browser-warning", "true")
+                    .header("User-Agent", "Telephony-CRM-Core")
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .buildAsync(URI.create(wsEndpoint), new WebSocket.Listener() {
+                        private final StringBuilder buffer = new StringBuilder();
 
-                @Override
-                public void handleTransportError(WebSocketSession session, Throwable exception) {
-                    isConnected = false;
-                    log.error("Asterisk ARI transport error: {}", exception.getMessage());
-                }
-            }, headers, URI.create(wsEndpoint)).get(5, TimeUnit.SECONDS);
+                        @Override
+                        public void onOpen(WebSocket webSocket) {
+                            isConnected = true;
+                            activeWebSocket = webSocket;
+                            log.info(">>> ACTIVE: Successfully connected to Asterisk ARI Stasis App [{}] <<<", appName);
+                            WebSocket.Listener.super.onOpen(webSocket);
+                        }
+
+                        @Override
+                        public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+                            buffer.append(data);
+                            if (last) {
+                                processEvent(buffer.toString());
+                                buffer.setLength(0);
+                            }
+                            return WebSocket.Listener.super.onText(webSocket, data, last);
+                        }
+
+                        @Override
+                        public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+                            isConnected = false;
+                            activeWebSocket = null;
+                            log.warn("ARI WebSocket closed: {} - {}", statusCode, reason);
+                            return WebSocket.Listener.super.onClose(webSocket, statusCode, reason);
+                        }
+
+                        @Override
+                        public void onError(WebSocket webSocket, Throwable error) {
+                            isConnected = false;
+                            activeWebSocket = null;
+                            log.error("ARI WebSocket transport error: {}", error.getMessage());
+                            WebSocket.Listener.super.onError(webSocket, error);
+                        }
+                    }).get(10, TimeUnit.SECONDS);
 
         } catch (Exception e) {
             isConnected = false;
-            log.warn("Asterisk ARI connection attempt failed: {}", e.getMessage());
+            activeWebSocket = null;
+            log.warn("ARI connection attempt failed: {}. Retrying in 5s...", e.getMessage());
         }
     }
 
@@ -122,25 +142,29 @@ public class AriTelephonyService {
             JsonNode node = mapper.readTree(payload);
             String type = node.path("type").asText();
 
-            log.info("ARI Event Received: {}", type);
+            log.info("Incoming Asterisk ARI Event: {}", type);
 
             if ("StasisStart".equals(type)) {
                 String channelId = node.path("channel").path("id").asText();
                 String callerNumber = node.path("channel").path("caller").path("number").asText();
 
-                log.info("Call entered Stasis app! Channel: {}, Caller: {}", channelId, callerNumber);
+                log.info("Live Call entered Stasis! Channel ID: {}, Caller: {}", channelId, callerNumber);
 
+                // 1. Answer channel
                 restClient.post().uri("/channels/{id}/answer", channelId).retrieve().toBodilessEntity();
 
+                // 2. Start recording
                 String recordingName = "call_" + channelId;
                 restClient.post()
                         .uri("/channels/{id}/record?name={name}&format=wav&ifExists=overwrite", channelId, recordingName)
                         .retrieve().toBodilessEntity();
 
+                // 3. Play greeting sound
                 restClient.post()
                         .uri("/channels/{id}/play?media=sound:demo-congrats", channelId)
                         .retrieve().toBodilessEntity();
 
+                // 4. Save call record
                 callLogRepository.save(CallLog.builder()
                         .channelId(channelId)
                         .callerNumber(callerNumber)
@@ -148,7 +172,7 @@ public class AriTelephonyService {
                         .build());
             }
         } catch (Exception e) {
-            log.error("Error handling ARI Event", e);
+            log.error("Error processing ARI Event", e);
         }
     }
 
@@ -166,7 +190,7 @@ public class AriTelephonyService {
                     .retrieve()
                     .toBodilessEntity();
 
-            log.info("Bridged call to agent {} for number {}", agentExt, customerNumber);
+            log.info("Bridged outbound call to agent {} for destination {}", agentExt, customerNumber);
         } catch (Exception e) {
             log.warn("Failed to originate live ARI channel: {}", e.getMessage());
         }
