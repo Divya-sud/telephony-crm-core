@@ -5,18 +5,18 @@ spring:
   application:
     name: telephony-crm-core
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/telephony_crm}
-    username: ${SPRING_DATASOURCE_USERNAME:crm_user}
-    password: ${SPRING_DATASOURCE_PASSWORD:crm_password}
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://dpg-dab4bmqjobas73bb2p0g-a:5432/telephony_crm}
+    username: ${SPRING_DATASOURCE_USERNAME:divya}
+    password: ${SPRING_DATASOURCE_PASSWORD:7kjFGNMqAsJFFRTxLrWuemL0LKtEEQZf}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+      idle-timeout: 30000
+      connection-timeout: 20000
   jpa:
-    database-platform: org.hibernate.dialect.PostgreSQLDialect
     hibernate:
       ddl-auto: update
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: false
     show-sql: false
 
 grok:
